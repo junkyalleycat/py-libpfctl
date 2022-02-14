@@ -123,19 +123,22 @@ def get_states(pf):
     rq = pfioc_states()
     rq.ps_len = 0
     while True:
-        states = create_string_buffer(rq.ps_len)
-        rq.ps_u.psu_states = cast(addressof(states), POINTER(pfsync_state))
+        n = int(rq.ps_len/sizeof(pfsync_state))
+        states = (pfsync_state*n)()
+        # cast because a pointer to an array is not the same type
+        # as a point to the array object (functionally the same though)
+        rq.ps_u.psu_states = cast(pointer(states), POINTER(pfsync_state))
         ioctl(pf.fileno(), DIOCGETSTATES, rq)
         if sizeof(states) >= rq.ps_len:
             break
         rq.ps_len *= 2
-    states = []
-    for i in range(int(rq.ps_len/sizeof(pfsync_state))):
+    n = int(rq.ps_len/sizeof(pfsync_state))
+    for i in range(n):
         state = pfsync_state()
-        # need to copy since the states buffer will go away
-        memmove(pointer(state), pointer(rq.ps_u.psu_states[i]), sizeof(pfsync_state))
-        states.append(state)
-    return states
+        # copy the state data because once states is lost
+        # the memory backing the state objects in it is lost
+        memmove(pointer(state), pointer(states[i]), sizeof(pfsync_state))
+        yield state
 
 def pf_addr_to_ip_address(pf_addr, af):
     if af == AF_INET.value:

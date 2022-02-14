@@ -6,6 +6,7 @@ from socket import *
 from . import pf
 
 def get_addr_name(addr):
+    return addr
     try:
         return f'{gethostbyaddr(str(addr))[0]}'
     except gaierror:
@@ -35,16 +36,16 @@ if __name__ == '__main__':
             sys.stdout.write(f'{pf.getprotobynumber(state.proto)} ')
             nk_addr1 = pf.pf_addr_to_ip_address(nk.addr[1], state.af)
             sk_addr1 = pf.pf_addr_to_ip_address(sk.addr[1], state.af)
-            sys.stdout.write(f'{get_addr_name(nk_addr1)}:{nk.port[1]}')
+            sys.stdout.write(f'{get_addr_name(nk_addr1)}:{ntohs(nk.port[1])}')
             if (nk_addr1 != sk_addr1) or (nk.port[1] != sk.port[1]):
-                sys.stdout.write(f' ({get_addr_name(sk_addr1)}:{sk.port[1]})')
+                sys.stdout.write(f' ({get_addr_name(sk_addr1)}:{ntohs(sk.port[1])})')
             if state.direction == pf.PF_OUT:
                 sys.stdout.write(' -> ')
             else:
                 sys.stdout.write(' <- ')
             nk_addr0 = pf.pf_addr_to_ip_address(nk.addr[0], state.af)
             sk_addr0 = pf.pf_addr_to_ip_address(sk.addr[0], state.af)
-            sys.stdout.write(f'{get_addr_name(nk_addr0)}:{nk.port[0]}')
+            sys.stdout.write(f'{get_addr_name(nk_addr0)}:{ntohs(nk.port[0])}')
             if (nk_addr0 != sk_addr0) or (nk.port[0] != sk.port[0]):
-                sys.stdout.write(f' ({get_addr_name(sk_addr0)}:{sk.port[0]})')
+                sys.stdout.write(f' ({get_addr_name(sk_addr0)}:{ntohs(sk.port[0])})')
             sys.stdout.write("\n")
