@@ -1,20 +1,27 @@
 #!/usr/bin/env python3
 
+import asyncio
 import sys
 from socket import *
 
 from . import pf
 
-def get_addr_name(addr):
-    return addr
-    try:
-        return f'{gethostbyaddr(str(addr))[0]}'
-    except gaierror:
-        return addr
-    except herror:
-        return addr
+cache={}
 
-if __name__ == '__main__':
+def get_addr_name(addr):
+    global cache
+    if addr in cache:
+        return cache[addr]
+    try:
+        name = gethostbyaddr(str(addr))[0]
+    except gaierror:
+        name = addr
+    except herror:
+        name = addr
+    cache[addr] = name
+    return name
+
+async def main():
     with open('/dev/pf', 'rb') as pfdev:
         for state in pf.get_states(pfdev):
             if state.direction == pf.PF_OUT:
@@ -33,7 +40,8 @@ if __name__ == '__main__':
                     sk.port[1] = nk.port[1]
             ifname = pf.cstr_to_str(state.ifname, 'ascii')
             sys.stdout.write(f'{ifname} ')
-            sys.stdout.write(f'{pf.getprotobynumber(state.proto)} ')
+            proto = pf.getprotobynumber(state.proto) or state.proto
+            sys.stdout.write(f'{proto} ')
             nk_addr1 = pf.pf_addr_to_ip_address(nk.addr[1], state.af)
             sk_addr1 = pf.pf_addr_to_ip_address(sk.addr[1], state.af)
             sys.stdout.write(f'{get_addr_name(nk_addr1)}:{ntohs(nk.port[1])}')
@@ -49,3 +57,5 @@ if __name__ == '__main__':
             if (nk_addr0 != sk_addr0) or (nk.port[0] != sk.port[0]):
                 sys.stdout.write(f' ({get_addr_name(sk_addr0)}:{ntohs(sk.port[0])})')
             sys.stdout.write("\n")
+
+asyncio.run(main())

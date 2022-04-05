@@ -119,15 +119,20 @@ class pfioc_states(Structure):
         ('ps_u', ps_u),
     ]
 
+class protoent(Structure):
+    _fields_ = [
+        ('p_name', POINTER(c_char)),
+        ('p_aliases', POINTER(POINTER(c_char))),
+        ('p_proto', c_int),
+    ]
+
 def get_states(pf):
     rq = pfioc_states()
     rq.ps_len = 0
     while True:
         n = int(rq.ps_len/sizeof(pfsync_state))
         states = (pfsync_state*n)()
-        # cast because a pointer to an array is not the same type
-        # as a point to the array object (functionally the same though)
-        rq.ps_u.psu_states = cast(pointer(states), POINTER(pfsync_state))
+        rq.ps_u.psu_states = states;
         ioctl(pf.fileno(), DIOCGETSTATES, rq)
         if sizeof(states) >= rq.ps_len:
             break
@@ -147,19 +152,16 @@ def pf_addr_to_ip_address(pf_addr, af):
         return ip_address(bytes(pf_addr.pfa.v6))
     raise Exception(f'unknown af: {af}')
 
+libc = cdll.LoadLibrary('libc.so.7')
+_getprotobynumber = libc.getprotobynumber
+_getprotobynumber.restype = POINTER(protoent)
+
 def getprotobynumber(value):
-    if value == IPPROTO_TCP:
-        return 'tcp'
-    elif value == IPPROTO_UDP:
-        return 'udp'
-    elif value == IPPROTO_ICMP:
-        return 'icmp'
-    elif value == IPPROTO_ICMPV6:
-        return 'icmpv6'
-    elif value == IPPROTO_IGMP:
-        return 'igmp'
-    raise Exception(f'unknown proto: {value}')
+    ent_p = _getprotobynumber(value)
+    if ent_p == 0:
+        return None
+    return cstr_to_str(ent_p.contents.p_name)
 
-def cstr_to_str(cstr, encoding='utf-8'):
-    return cstr.split(b'\0', 1)[0].decode(encoding=encoding)
-
+def cstr_to_str(obj, encoding='utf-8'):
+# TODO why does this work
+    return string_at(obj).decode(encoding=encoding)

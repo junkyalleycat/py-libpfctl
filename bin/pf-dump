@@ -4,4 +4,4 @@ set -e
 
 root=$(dirname $(realpath $BASH_SOURCE))/..
 source ${root}/venv/bin/activate
-exec python -m mypf.pf_dump "$@"
+exec python -X faulthandler -m mypf.pf_dump "$@"
