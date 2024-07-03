@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 
+from pathlib import PurePath
 from collections import namedtuple
 import base64
 import json
-from ipaddress import *
-from socket import *
 from ctypes import *
 from fcntl import ioctl
+from ipaddress import IPv4Address, IPv6Address
 
 # constants
 DIOCGETSTATES=3222291481
@@ -29,8 +29,6 @@ class in_addr(Structure):
     _fields_ = [
         ('s_addr', in_addr_t),
     ]
-    def to_friendly(self):
-        return ip_address(bytes(self))
 
 # netinet6/in6.h
 # TODO the naming of u6_addr as a field
@@ -47,8 +45,6 @@ class in6_addr(Structure):
     _fields_ = [
         ('u6_addr', __u6_addr),
     ]
-    def to_friendly(self):
-        return ip_address(bytes(self))
 
 # netpfil/pf/pf.h
 class pf_addr(Structure):
@@ -64,17 +60,10 @@ class pf_addr(Structure):
     _fields_ = [
         ('_', _),
     ]
-    def to_friendly(self, af):
-        if af == AF_INET:
-            return self.v4.to_friendly()
-        elif af == AF_INET6:
-            return self.v6.to_friendly()
-        assert False
 
 # net/pfvar.h
-# TODO packed
 class pfsync_state_scrub(Structure):
-    _pack_ = True
+    _pack_ = 1
     _fields_ = [
         ('pfss_flags', c_uint16),
         ('pfss_ttl', c_uint8),
@@ -83,9 +72,8 @@ class pfsync_state_scrub(Structure):
     ]
 
 # net/pfvar.h
-# TODO packed
 class pfsync_state_peer(Structure):
-    _pack_ = True
+    _pack_ = 1
     _fields_ = [
         ('scrub', pfsync_state_scrub),
         ('seqlo', c_uint32),
@@ -99,31 +87,47 @@ class pfsync_state_peer(Structure):
     ]
 
 # net/pfvar.h
-# TODO packed
 class pfsync_state_key(Structure):
-    _pack_ = True
+    _pack_ = 1
     _fields_ = [
         ('addr', pf_addr*2),
         ('port', c_uint16*2),
     ]
-    def to_friendly(self, af, asdict=False):
-        fieldnames = [e[0] for e in pfsync_state_key._fields_]
-        friendly = namedtuple('pfsync_state_key', fieldnames)
-        addrs = [self.addr[0].to_friendly(af), self.addr[1].to_friendly(af)]
-        if asdict:
-            return friendly(addrs, self.port)._asdict()
-        return friendly(addrs, self.port)
 
-def structure_to_data(o):
-    data = {}
-    for field in o._fields_:
-        data[field[0]] = getattr(o, field[0])
-    return data
+class Record:
+    def __init__(self, name, fieldnames):
+        self.name = name
+        self.fieldnames = fieldnames
+
+CDataField = namedtuple('CDataField', ['parents', 'parent', 'path', 'value'])
+
+def cdata_to_record(o, *, path=PurePath(), parents=[None], mapper=lambda _: None):
+    mapped = mapper(CDataField(parents, parents[-1], path, o))
+    if mapped is not None:
+        return mapped
+    if type(o) in (int, bytes):
+        return o
+    elif isinstance(o, Array):
+        parents.append(o)
+        data = []
+        for i in range(len(o)):
+            data.append(cdata_to_record(o[i], path=path.joinpath(str(i)), parents=parents, mapper=mapper))
+        parents.pop()
+        return data
+    elif isinstance(o, (Structure, Union,)):
+        data = {}
+        parents.append(o)
+        for fieldname, _ in o._fields_:
+            data[fieldname] = cdata_to_record(getattr(o, fieldname), path=path.joinpath(fieldname), parents=parents, mapper=mapper)
+        parents.pop()
+        name = o.__class__.__name__
+        return namedtuple(name, data.keys(), rename=True)(*data.values())
+    else:
+        raise Exception(f"unsupported type: {type(o)}")
 
 # net/pfvar.h
-# TODO packed
 class pfsync_state_1301(Structure):
-    _pack_ = True
+    _pack_ = 1
     _fields_ = [
         ('id', c_uint64),
         ('ifname', c_char*IFNAMSIZ),
@@ -149,26 +153,13 @@ class pfsync_state_1301(Structure):
         ('sync_flags', c_uint8),
         ('updates', c_uint8),
     ]
+
     def deepcopy(self):
         return pfsync_state_1301.from_buffer_copy(self)
-    def to_friendly(self, *, asdict=False):
-        fieldnames = [e[0] for e in pfsync_state_1301._fields_]
-        fieldnames.remove('__spare')
-        friendly = namedtuple('pfsync_state_1301', fieldnames, rename=True)
-        kwargs = structure_to_data(self)
-        del kwargs['__spare']
-        kwargs['id'] = hex(self.id)
-        kwargs['ifname'] = cstr_to_str(self.ifname)
-        kwargs['key'] = [e.to_friendly(self.af, asdict=asdict) for e in self.key]
-        kwargs['rt_addr'] = self.rt_addr.to_friendly(self.af)
-        if asdict:
-            return friendly(**kwargs)._asdict()
-        return friendly(**kwargs)
 
 ## net/pfvar.h
-## TODO packed
 #class pfsync_state_1400(Structure):
-#    _pack_ = True
+#    _pack_ = 1
 #    _fields_ = [
 #        ('id', c_uint64),
 #        ('ifname', c_char*IFNAMSIZ),
@@ -261,13 +252,6 @@ def get_states(pf):
         # once the states object is lost backing memory is freed
         yield states[i].deepcopy()
 
-def pf_addr_to_ip_address(pf_addr, af):
-    if af == AF_INET.value:
-        return ip_address(bytes(pf_addr.v4))
-    elif af == AF_INET6.value:
-        return ip_address(bytes(pf_addr.v6))
-    raise Exception(f'unknown af: {af}')
-
 libc = cdll.LoadLibrary('libc.so.7')
 _getprotobynumber = libc.getprotobynumber
 _getprotobynumber.restype = POINTER(protoent)
@@ -282,26 +266,12 @@ def cstr_to_str(obj, encoding='utf-8'):
 # TODO why does this work
     return string_at(obj).decode(encoding=encoding)
 
-def structure_to_data(o):
-    data = {}
-    for field in o._fields_:
-        data[field[0]] = getattr(o, field[0])
-    return data
-
 class JSONEncoder(json.JSONEncoder):
 
     def default(self, o):
-        if isinstance(o, Array):
-            return list(o)
-        elif type(o) == pfsync_state_1301:
-            return o.to_friendly(asdict=True)
-        elif isinstance(o, Structure):
-            return structure_to_data(o)
-        elif isinstance(o, Union):
-            return structure_to_data(o)
-        elif type(o) is bytes:
+        if type(o) is bytes:
             return base64.b64encode(o).decode()
-        elif type(o) in (IPv4Address, IPv6Address):
+        if type(o) in (IPv4Address, IPv6Address):
             return str(o)
         super().default(o)
 

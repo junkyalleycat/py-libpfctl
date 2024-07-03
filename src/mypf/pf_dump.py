@@ -5,25 +5,20 @@ import io
 import argparse
 import asyncio
 import sys
-from ipaddress import ip_address
-from socket import *
+import ipaddress
+import socket
+import functools
 
-from .pf import *
+from . import pf
 
-cache={}
-
+@functools.lru_cache
 def get_addr_name(addr):
-    return addr
-    global cache
-    if addr in cache:
-        return cache[addr]
     try:
-        name = gethostbyaddr(str(addr))[0]
-    except gaierror:
+        name = socket.gethostbyaddr(str(addr))[0]
+    except socket.gaierror:
         name = addr
-    except herror:
+    except socket.herror:
         name = addr
-    cache[addr] = name
     return name
 
 def parse_filter(x):
@@ -34,7 +29,10 @@ def parse_filter(x):
 async def amain():
     parser = argparse.ArgumentParser()
     parser.add_argument('-x')
+    parser.add_argument('-p', action='append', default=[])
     parser.add_argument('-d', action='append', default=[])
+    parser.add_argument('--hex-id', action='store_true')
+    parser.add_argument('--resolve', action='store_true')
     args = parser.parse_args()
 
     if args.x is None:
@@ -42,59 +40,88 @@ async def amain():
     else:
         x_filter = parse_filter(args.x)
 
-    with open('/dev/pf', 'rb') as pfdev:
-        for state in get_states(pfdev):
-#            if state.direction == PF_OUT:
-#                src = state.src
-#                dst = state.dst
-#                sk = state.key[PF_SK_STACK]
-#                nk = state.key[PF_SK_WIRE]
-#                if state.proto in [IPPROTO_ICMP, IPPROTO_ICMPV6]:
-#                    sk.port[0] = nk.port[0]
-#            else:
-#                src = state.dst
-#                dst = state.src
-#                sk = state.key[PF_SK_WIRE]
-#                nk = state.key[PF_SK_STACK]
-#                if state.proto in [IPPROTO_ICMP, IPPROTO_ICMPV6]:
-#                    sk.port[1] = nk.port[1]
-#            ifname = cstr_to_str(state.ifname, 'ascii')
-#            output = io.StringIO()
-#            output.write(f'{ifname} ')
-#            proto = getprotobynumber(state.proto) or state.proto
-#            output.write(f'{proto} ')
-#            nk_addr1 = pf_addr_to_ip_address(nk.addr[1], state.af)
-#            sk_addr1 = pf_addr_to_ip_address(sk.addr[1], state.af)
-#            output.write(f'{get_addr_name(nk_addr1)}:{ntohs(nk.port[1])}')
-#            if (nk_addr1 != sk_addr1) or (nk.port[1] != sk.port[1]):
-#                output.write(f' ({get_addr_name(sk_addr1)}:{ntohs(sk.port[1])})')
-#            if state.direction == PF_OUT:
-#                output.write(' -> ')
-#            else:
-#                output.write(' <- ')
-#            nk_addr0 = pf_addr_to_ip_address(nk.addr[0], state.af)
-#            sk_addr0 = pf_addr_to_ip_address(sk.addr[0], state.af)
-#            output.write(f'{get_addr_name(nk_addr0)}:{ntohs(nk.port[0])}')
-#            if (nk_addr0 != sk_addr0) or (nk.port[0] != sk.port[0]):
-#                output.write(f' ({get_addr_name(sk_addr0)}:{ntohs(sk.port[0])})')
-#            output.write("\n")
+    def state_mapper(af):
+        def mapper(field):
+            if isinstance(field.parent, pf.pfsync_state_1301):
+                if field.path.stem == 'ifname':
+                    return field.value.decode()
+                elif (field.path.stem == 'id') and (args.hex_id):
+                    return hex(field.value)
+            elif isinstance(field.value, pf.pf_addr):
+                if af == socket.AF_INET:
+                    addr = ipaddress.ip_address(bytes(field.value.v4))
+                elif af == socket.AF_INET6:
+                    addr = ipaddress.ip_address(bytes(field.value.v6))
+                else:
+                    addr = None
+                if addr is not None:
+                    if args.resolve:
+                        return get_addr_name(addr)
+                    return addr
+            return None
+        return mapper
 
-            varz = {
-                'state': state.to_friendly(),
-                'ip': ip_address,
-                'PF_INOUT': PF_INOUT,
-                'PF_IN': PF_IN,
-                'PF_OUT': PF_OUT,
-                'PF_SK_WIRE': PF_SK_WIRE,
-                'PF_SK_STACK': PF_SK_STACK,
-                'PF_SK_BOTH': PF_SK_BOTH
+    # TODO not a big fan of this, but default
+    # json encoder happily converts tuples, so
+    # if i'm using namedtuple in record, then i need
+    # to do something like this
+    def reverse(o):
+        if type(o) in (int,str,bool,):
+            return o
+        elif type(o) is list:
+            return [reverse(e) for e in o]
+        elif type(o) in (ipaddress.IPv4Address, ipaddress.IPv6Address):
+            return str(o)
+        elif isinstance(o, tuple):
+            data = {}
+            for fieldname in o._fields:
+                data[fieldname] = reverse(getattr(o, fieldname))
+            return data
+        else:
+            raise Exception(f'unknown type: {type(o)}')
+
+    def x_select(state):
+        def _(x):
+            if x:
+                return state
+            return None
+        return _
+
+    with open('/dev/pf', 'rb') as pfdev:
+        for state in pf.get_states(pfdev):
+            mapper = state_mapper(state.af)
+            state = pf.cdata_to_record(state, mapper=mapper)
+
+            localz = {
+                'ip': ipaddress.ip_address,
+                'PF_INOUT': pf.PF_INOUT,
+                'PF_IN': pf.PF_IN,
+                'PF_OUT': pf.PF_OUT,
+                'PF_SK_WIRE': pf.PF_SK_WIRE,
+                'PF_SK_STACK': pf.PF_SK_STACK,
+                'PF_SK_BOTH': pf.PF_SK_BOTH
             }
+
             for decl in args.d:
                 name, _, x = decl.partition(':')
-                varz[name] = eval(x, varz)
+                localz[name] = eval(x, localz)
 
-            if x_filter(varz):
-                print(json.dumps(state, cls=JSONEncoder))
+
+            for p in args.p:
+                varz = localz.copy()
+                varz.update({
+                    'state': state,
+                    'select': x_select(state)
+                })
+                state = eval(p, {}, varz)
+                if state is None:
+                    break
+
+            if state is not None:
+                print(json.dumps(reverse(state)))
+
+#            if x_filter(varz):
+#                print(json.dumps(reverse(state)))
 
 def main():
     asyncio.run(amain())
