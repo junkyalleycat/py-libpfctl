@@ -3,7 +3,7 @@ requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "mypf"
+name = "libpfctl"
 version = "0.1"
 authors = [
   { name="Drew Gochenaur" }
@@ -14,4 +14,4 @@ dependencies = [
 ]
 
 [project.scripts]
-pf-dump = "mypf.pf_dump:main"
+pf-dump = "pfctl.pf_dump:main"
