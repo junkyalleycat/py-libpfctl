@@ -140,9 +140,3 @@ def get_states(dev):
     finally:
         _pfctl_free_states(states)
 
-# libpfctl.h
-def get_states2(dev):
-    with get_state(dev) as states:
-        for s in TAILQ_FOREACH(states.states, 'entry'):
-            yield s.contents
-
